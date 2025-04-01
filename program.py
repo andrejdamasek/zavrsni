@@ -54,7 +54,21 @@ def draw_from_points():
     plt.gca().invert_yaxis()
     plt.title("Učitani crtež")
     plt.show()
+    
+def transform_to_3d(scale=0.1, z_height=0, offsets=(200, 50, -10)):
+    X_offset, Y_offset, Z_offset = offsets
+    global points
+    points_3d = []
 
+    for point in points:
+        if np.all(point == [-1, -1]): 
+            points_3d.append(None)
+        else:
+            x_3d = point[0] * scale  + X_offset
+            y_3d = point[1] * scale+ Y_offset
+            z_3d = z_height + Z_offset
+            points_3d.append((x_3d, y_3d, z_3d))
+    return points_3d
 
 while True:
     
