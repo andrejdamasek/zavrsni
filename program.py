@@ -39,7 +39,7 @@ def draw(event, x, y, flags, param):
 
 
     
-def transform_to_3d(scale=0.1, z_height=0, offsets=(0, 0.5, 0)):
+def transform_to_3d(scale=0.001, z_height=0, offsets=(-0.4, 0.5, 0)):
     X_offset, Y_offset, Z_offset = offsets
     global points
     points_3d = []
@@ -49,7 +49,7 @@ def transform_to_3d(scale=0.1, z_height=0, offsets=(0, 0.5, 0)):
             points_3d.append(None)
         else:
             x_3d = point[0] * scale  + X_offset
-            y_3d = point[1] * scale+ Y_offset
+            y_3d = -point[1] * scale+ Y_offset
             z_3d = z_height + Z_offset
             points_3d.append((x_3d, y_3d, z_3d))
     return points_3d
@@ -110,66 +110,75 @@ def main():
             current_pose = controller.get_current_tool_pose()
             T_6_0 = np.copy(current_pose)
 
-            T_6_0[0,3]+=0.1 # move +10 cm in X direction
-            T_6_0[2, 3] += 0.10  # move +10 cm in Z direction
+            # T_6_0[0,3]+=0.1 # move +10 cm in X direction
+            # T_6_0[2, 3] += 0.10  # move +10 cm in Z direction
 
-            rospy.loginfo("Planning Cartesian move 10 cm in X and Z...")
-            joint_sol = controller.get_closest_ik_solution(T_6_0)
+            # rospy.loginfo("Planning Cartesian move 10 cm in X and Z...")
+            # joint_sol = controller.get_closest_ik_solution(T_6_0)
             #joint_sol[0] += np.pi
             #joint_sol[joint_sol>np.pi]-=(2.0*np.pi)
             #joint_sol[joint_sol<-np.pi]+=(2.0*np.pi)
-            if joint_sol is not None:
-               current_joints = controller.get_current_joint_values()
-               joint_traj = np.array([current_joints, joint_sol])
-               controller.send_joint_trajectory_action(joint_traj, max_velocity=0.5, max_acceleration=0.5)
-            else:
-               rospy.logwarn("No IK solution found for offset pose.")
+            # if joint_sol is not None:
+            #    current_joints = controller.get_current_joint_values()
+            #    joint_traj = np.array([current_joints, joint_sol])
+            #    controller.send_joint_trajectory_action(joint_traj, max_velocity=0.5, max_acceleration=0.5)
+            # else:
+            #    rospy.logwarn("No IK solution found for offset pose.")
 
-            rospy.sleep(1.0)
+            # rospy.sleep(1.0)
 
-            T_6_0[1,3]+=0.1 # move +10 cm in y direction
-            T_6_0[2, 3] -= 0.10  # move +10 cm in Z direction
-            rospy.loginfo("Planning Cartesian move 10 cm in y and -10cm in Z...")
-            joint_sol = controller.get_closest_ik_solution(T_6_0)
+            # T_6_0[1,3]+=0.1 # move +10 cm in y direction
+            # T_6_0[2, 3] -= 0.10  # move +10 cm in Z direction
+            # rospy.loginfo("Planning Cartesian move 10 cm in y and -10cm in Z...")
+            # joint_sol = controller.get_closest_ik_solution(T_6_0)
             #joint_sol[0] += np.pi
             #joint_sol[joint_sol>np.pi]-=(2.0*np.pi)
             #joint_sol[joint_sol<-np.pi]+=(2.0*np.pi)
-            if joint_sol is not None:
-               current_joints = controller.get_current_joint_values()
-               joint_traj = np.array([current_joints, joint_sol])
-               controller.send_joint_trajectory_action(joint_traj, max_velocity=0.5, max_acceleration=0.5)
-            else:
-               rospy.logwarn("No IK solution found for offset pose.")
+            # if joint_sol is not None:
+            #    current_joints = controller.get_current_joint_values()
+            #    joint_traj = np.array([current_joints, joint_sol])
+            #    controller.send_joint_trajectory_action(joint_traj, max_velocity=0.5, max_acceleration=0.5)
+            # else:
+            #    rospy.logwarn("No IK solution found for offset pose.")
 
-            rospy.sleep(1.0)
-            controller.shutdown()
-            '''
+            # rospy.sleep(1.0)
+            #controller.shutdown()
+            
             points_3d=transform_to_3d()
-            for point in points_3d:
+            current_joints = controller.get_current_joint_values()
+            traj = [current_joints]
+            for point in points_3d[::5]:
                 if point is not None:
-                    T_6_0[:3, 3] = point
+                    T_6_0[:3, :3] = np.array([[1, 0, 0],
+                                              [0, -1, 0],
+                                              [0, 0, -1]])
+                    #T_6_0[:3,3]=point
+                    T_6_0[0, 3] = point[0]                
+                    T_6_0[1, 3] = point[1]
+                    
                     rospy.loginfo("Planning Cartesian move...")
                     joint_sol = controller.get_closest_ik_solution(T_6_0)
                     if joint_sol is not None:
-                        current_joints = controller.get_current_joint_values()
-                        joint_traj = np.array([current_joints, joint_sol])
-                        controller.send_joint_trajectory_action(joint_traj, max_velocity=0.5, max_acceleration=0.5)
+                        # joint_traj = np.array([current_joints, joint_sol])
+                        traj.append(joint_sol.tolist())
+                        # controller.send_joint_trajectory_action(joint_traj, max_velocity=0.5, max_acceleration=0.5)
                     else:
                         rospy.logwarn("No IK solution found for offset pose.")
                     rospy.sleep(1.0)
-                    controller.shutdown()
-                else:
-                    T_6_0[2,3]+=0.05
-                    rospy.loginfo("Planning Cartesian move...")
-                    joint_sol = controller.get_closest_ik_solution(T_6_0)
-                    if joint_sol is not None:
-                        current_joints = controller.get_current_joint_values()
-                        joint_traj = np.array([current_joints, joint_sol])
-                        controller.send_joint_trajectory_action(joint_traj, max_velocity=0.5, max_acceleration=0.5)
+                    
+                # else:
+                #     T_6_0[2,3]+=0.02
+                #     rospy.loginfo("Planning Cartesian move...")
+                #     joint_sol = controller.get_closest_ik_solution(T_6_0)
+                #     if joint_sol is not None:
+                #         current_joints = controller.get_current_joint_values()
+                #         joint_traj = np.array([current_joints, joint_sol])
+                #         controller.send_joint_trajectory_action(joint_traj, max_velocity=0.5, max_acceleration=0.5)
             
-            '''
-            
-            
+            controller.send_joint_trajectory_action(np.array(traj), max_velocity=0.5, max_acceleration=0.5)
+            controller.shutdown()
+                      
+        
 
 if __name__ == "__main__":
     main()
