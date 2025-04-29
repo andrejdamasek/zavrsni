@@ -2,7 +2,9 @@
 import rospy
 import numpy as np
 import cv2
-from core.real_ur5_controller import UR5Controller  
+from core.real_ur5_controller import UR5Controller 
+import threading
+
 
 points = np.empty((0, 2), dtype=int) 
 is_drawing = False
@@ -39,6 +41,7 @@ def draw(event, x, y, flags, param):
     elif event == cv2.EVENT_LBUTTONUP:
         is_drawing = False
 
+
 def sample_between_none(points, step=5):
     result = []
     segment = []
@@ -62,7 +65,8 @@ def sample_between_none(points, step=5):
         result.extend(sampled)
 
     return np.array(result)
-    
+
+
 def transform_to_3d(points, scale=0.001, z_height=0, offsets=(-0.25, 0.8, 0)):
     X_offset, Y_offset, Z_offset = offsets
     points_3d = []
@@ -78,6 +82,7 @@ def transform_to_3d(points, scale=0.001, z_height=0, offsets=(-0.25, 0.8, 0)):
 
     return points_3d
 
+
 def send_robot_to_start_position(controller):
     current_pose = controller.get_current_tool_pose()
     T_6_0 = np.copy(current_pose)
@@ -89,15 +94,60 @@ def send_robot_to_start_position(controller):
                               [0, -1, 0],
                               [0, 0, -1]])
 
-    start_joints = controller.get_closest_ik_solution(T_6_0)
+    current_joints = controller.get_current_joint_values()
+    traj = [current_joints]
 
-    if start_joints is not None:
-        traj = [controller.get_current_joint_values(), start_joints]
+    joint_sol = controller.get_closest_ik_solution(T_6_0)
+
+    if joint_sol is not None:
+        traj.append(joint_sol.tolist())        
         controller.send_joint_trajectory_action(np.array(traj), max_velocity=0.5, max_acceleration=0.5)
         rospy.sleep(2)
         print("Robot postavljen u početnu poziciju.")
     else:
         rospy.logwarn("Nije pronađeno IK rješenje za početnu poziciju.")
+
+
+def monitor_force_and_cancel(robot: UR5Controller, threshold: float = 30.0, check_rate: float = 50.0):
+    """
+    Monitors force in the background while a trajectory is active.
+    Cancels the trajectory if force exceeds the threshold.
+    """
+    rate = rospy.Rate(check_rate)
+    max_wait_cycles = int(2.0 * check_rate)  # 2 seconds timeout
+
+    rospy.loginfo("[monitor] Waiting for trajectory to become ACTIVE...")
+
+    # Phase 1: Wait for the goal to be accepted (state becomes ACTIVE)
+    for _ in range(max_wait_cycles):
+        state = robot.client.get_state()
+        if state == 1:  # ACTIVE
+            rospy.loginfo("[monitor] Trajectory is ACTIVE.")
+            break
+        elif state == 0:  # PENDING
+            rate.sleep()
+        else:
+            rospy.loginfo_throttle(0.5, "[monitor] Goal state: %d (waiting for ACTIVE...)", state)
+            rate.sleep()
+    else:
+        rospy.logwarn("[monitor] Timeout waiting for trajectory to become ACTIVE. Final state: %s", str(state))
+        return
+
+    # Phase 2: Monitor force while ACTIVE
+    while not rospy.is_shutdown() and robot.client.get_state() == 1:
+        wrench = robot.get_current_wrench()
+        force = np.linalg.norm(wrench[:3])
+        rospy.loginfo_throttle(1.0, "[monitor] Force: %.2f N", force)
+
+        if force > threshold:
+            rospy.logwarn("Force threshold exceeded: %.2f N", force)
+            robot.force_violation = True
+            robot.cancel_trajectory()
+            return
+
+        rate.sleep()
+
+    rospy.loginfo("[monitor] Trajectory no longer ACTIVE. Monitoring stopped.")
 
 
 def main():
@@ -183,21 +233,60 @@ def main():
                             rospy.logwarn("No IK solution found for offset pose.")
                         pen_is_down = False
 
-                else:                    
+                #novo        
+                else:
                     T_6_0[0, 3] = point[0]
                     T_6_0[1, 3] = point[1]
                     if not pen_is_down:
-                        T_6_0[2, 3] -= z_up 
-                        pen_is_down = True
-                    
-                    joint_sol = controller.get_closest_ik_solution(T_6_0)
-                    if joint_sol is not None:
-                        traj.append(joint_sol.tolist())
+                        joint_sol = controller.get_closest_ik_solution(T_6_0)
+                        if joint_sol is not None:
+                            
+                            controller.force_violation = False  #dodao chat
+                            robot.zero_ft_sensor()
+                            monitor_thread = threading.Thread(target=monitor_force_and_cancel, args=(controller, 5.0))
+                            monitor_thread.start()
+
+                            
+                            #success = controller.send_joint_trajectory_action(np.array([controller.get_current_joint_values(), joint_sol]), max_velocity=0.5, max_acceleration=0.5) chat
+                            success = robot.send_joint_trajectory_action(traj, max_velocity=0.5, max_acceleration=0.5)
+                            monitor_thread.join()
+
+                            #chat
+                            if controller.force_violation:
+                                rospy.logwarn("Prekinuto zbog prevelike sile pri spuštanju.")
+                                break  
+                             
+                            pen_is_down = True
+                        else:
+                            rospy.logwarn("No IK solution found for lower position.")
+                    else:
+                        joint_sol = controller.get_closest_ik_solution(T_6_0)
+                        if joint_sol is not None:
+                            traj.append(joint_sol.tolist())
 
                 rospy.sleep(1)
+
             
-            controller.send_joint_trajectory_action(np.array(traj), max_velocity=0.5, max_acceleration=0.5)
-            controller.shutdown()                     
+            if not controller.force_violation:
+                controller.send_joint_trajectory_action(np.array(traj), max_velocity=0.5, max_acceleration=0.5)
+            controller.shutdown()
+
+            #staro
+            #     else:                    
+            #         T_6_0[0, 3] = point[0]
+            #         T_6_0[1, 3] = point[1]
+            #         if not pen_is_down:
+            #             T_6_0[2, 3] -= z_up 
+            #             pen_is_down = True
+                    
+            #         joint_sol = controller.get_closest_ik_solution(T_6_0)
+            #         if joint_sol is not None:
+            #             traj.append(joint_sol.tolist())
+
+            #     rospy.sleep(1)
+            
+            # controller.send_joint_trajectory_action(np.array(traj), max_velocity=0.5, max_acceleration=0.5)
+            # controller.shutdown()                     
         
 
 if __name__ == "__main__":
