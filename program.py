@@ -47,7 +47,7 @@ def sample_between_none(points, step=5):
     segment = []
     
     for point in points:
-        if np.array_equal(point, [-1, -1]):
+        if point is None:
             if segment:
                 sampled = segment[::step]
                 if not np.array_equal(segment[-1], sampled[-1]):
@@ -86,9 +86,9 @@ def transform_to_3d(points, scale=0.001, z_height=0, offsets=(-0.25, 0.8, 0)):
 def send_robot_to_start_position(controller):
     current_pose = controller.get_current_tool_pose()
     T_6_0 = np.copy(current_pose)
-    T_6_0[0, 3] = -0.25   # X
-    T_6_0[1, 3] = 0.8   # Y
-    T_6_0[2, 3] = 0.3   # Z
+    T_6_0[0, 3] = 0  # X
+    T_6_0[1, 3] = 0.6   # Y
+    T_6_0[2, 3] = 0.45 # Z
 
     T_6_0[:3, :3] = np.array([[1, 0, 0],
                               [0, -1, 0],
@@ -150,6 +150,32 @@ def monitor_force_and_cancel(robot: UR5Controller, threshold: float = 30.0, chec
     rospy.loginfo("[monitor] Trajectory no longer ACTIVE. Monitoring stopped.")
 
 
+
+def get_points_going_down(points_3d):
+    points_going_down = []
+
+    for i in range(len(points_3d)):
+        if i == 0:
+            points_going_down.append(points_3d[i])
+        elif points_3d[i - 1] is None:
+            points_going_down.append(points_3d[i])
+    
+    return points_going_down
+
+
+def initialize_traj(points_3d):
+    counter = 1
+    traj = []
+    for point in points_3d:
+        if point is None:
+            traj.append([])
+            counter += 1
+
+    traj.append([])
+
+    return traj , counter
+
+
 def main():
     global is_drawing, points
 
@@ -202,92 +228,85 @@ def main():
             controller = UR5Controller()
             rospy.loginfo("Starting UR5 simple demo...")
 
+            print("Robot ide u startnu poziciju.")
             send_robot_to_start_position(controller)
+           
+            points_3d=transform_to_3d(points)   
 
+            segments = sample_between_none(points_3d, step=5)       
 
-            current_pose = controller.get_current_tool_pose()
-            T_6_0 = np.copy(current_pose)
+            points_3d_going_down=get_points_going_down(points_3d)
+
+            traj , counter= initialize_traj(points_3d)            
+            
+           
 
             z_up = 0.05 
-            pen_is_down = False  
+            z = 0 
+
+            current_pose = controller.get_current_tool_pose()
+            T_6_0 = np.copy(current_pose)  
             T_6_0[:3, :3] = np.array([[1, 0, 0],
                                      [0, -1, 0],
                                      [0, 0, -1]])
-
-           
-            new_points = sample_between_none(points, step=5)
-            points_3d=transform_to_3d(new_points)
-            print("Pokretanje robota.")
-            current_joints = controller.get_current_joint_values()
-            traj = [current_joints]
-
-           
-            for point in points_3d:
-                if point is None:
-                    if pen_is_down:
-                        T_6_0[2, 3] += z_up 
-                        joint_sol = controller.get_closest_ik_solution(T_6_0)
-                        if joint_sol is not None:
-                            traj.append(joint_sol.tolist())
-                        else:
-                            rospy.logwarn("No IK solution found for offset pose.")
-                        pen_is_down = False
-
-                #novo        
-                else:
-                    T_6_0[0, 3] = point[0]
-                    T_6_0[1, 3] = point[1]
-                    if not pen_is_down:
-                        joint_sol = controller.get_closest_ik_solution(T_6_0)
-                        if joint_sol is not None:
-                            
-                            controller.force_violation = False  #dodao chat
-                            robot.zero_ft_sensor()
-                            monitor_thread = threading.Thread(target=monitor_force_and_cancel, args=(controller, 5.0))
-                            monitor_thread.start()
-
-                            
-                            #success = controller.send_joint_trajectory_action(np.array([controller.get_current_joint_values(), joint_sol]), max_velocity=0.5, max_acceleration=0.5) chat
-                            success = robot.send_joint_trajectory_action(traj, max_velocity=0.5, max_acceleration=0.5)
-                            monitor_thread.join()
-
-                            #chat
-                            if controller.force_violation:
-                                rospy.logwarn("Prekinuto zbog prevelike sile pri spuštanju.")
-                                break  
-                             
-                            pen_is_down = True
-                        else:
-                            rospy.logwarn("No IK solution found for lower position.")
-                    else:
-                        joint_sol = controller.get_closest_ik_solution(T_6_0)
-                        if joint_sol is not None:
-                            traj.append(joint_sol.tolist())
-
-                rospy.sleep(1)
-
             
-            if not controller.force_violation:
-                controller.send_joint_trajectory_action(np.array(traj), max_velocity=0.5, max_acceleration=0.5)
-            controller.shutdown()
+            current_joints = controller.get_current_joint_values() #neznam jer mi je ovo potrebno
+            traj[0]=[current_joints] #neznam jer mi je ovo potrebno
 
-            #staro
-            #     else:                    
-            #         T_6_0[0, 3] = point[0]
-            #         T_6_0[1, 3] = point[1]
-            #         if not pen_is_down:
-            #             T_6_0[2, 3] -= z_up 
-            #             pen_is_down = True
+            for i in range(counter):
+
+                point=points_3d_going_down[i]
+
+               # T_6_0[:3, :3] = np.array([[1, 0, 0],
+               #                         [0, -1, 0],
+               #                         [0, 0, -1]])
+
+                T_6_0[0, 3] = point[0] #x
+                T_6_0[1, 3] = point[1] #y
+                
+                joint_sol = controller.get_closest_ik_solution(T_6_0)
+                if joint_sol is not None:
+                
+                    controller.force_violation = False  
+                    controller.zero_ft_sensor()
+                    monitor_thread = threading.Thread(target=monitor_force_and_cancel, args=(controller, 7.0)) #sila 7.0 N
+                    monitor_thread.start()
+                    success = controller.send_joint_trajectory_action(np.array([controller.get_current_joint_values(), joint_sol]), max_velocity=0.5, max_acceleration=0.5)                     
+                    monitor_thread.join()
+                        
+                    if controller.force_violation:
+                        rospy.logwarn("Prekinuto zbog prevelike sile pri spuštanju.")
                     
-            #         joint_sol = controller.get_closest_ik_solution(T_6_0)
-            #         if joint_sol is not None:
-            #             traj.append(joint_sol.tolist())
+                if joint_sol is None:
+                    rospy.logwarn("No IK solution found for lower position.")
 
-            #     rospy.sleep(1)
-            
-            # controller.send_joint_trajectory_action(np.array(traj), max_velocity=0.5, max_acceleration=0.5)
-            # controller.shutdown()                     
-        
+                if not controller.force_violation:  
+                    current_pose = controller.get_current_tool_pose()
+                    T_6_0 = np.copy(current_pose)
+                    z=T_6_0[2, 3] # z os nakon spuštanja
+
+                    for p in segments[i]:
+                        if p is None:
+                            T_6_0[2, 3]= z + z_up 
+                            joint_sol = controller.get_closest_ik_solution(T_6_0)
+                            if joint_sol is not None:
+                                traj[i].append(joint_sol.tolist())
+                            else:
+                                rospy.logwarn("No IK solution found for offset pose.")
+                        else:
+                            T_6_0[0, 3] = p[0]
+                            T_6_0[1, 3] = p[1]
+                            T_6_0[2, 3] = z
+                            joint_sol = controller.get_closest_ik_solution(T_6_0)
+                            if joint_sol is not None:
+                                traj[i].append(joint_sol.tolist())
+                            else:
+                                rospy.logwarn("No IK solution found for lower position.")
+
+                    controller.send_joint_trajectory_action(np.array(traj[i]), max_velocity=0.5, max_acceleration=0.5)
+
+            send_robot_to_start_position(controller)  #na kraju se vrati u startnu poziciju
+            rospy.loginfo("UR5 simple demo finished.") 
 
 if __name__ == "__main__":
     main()
