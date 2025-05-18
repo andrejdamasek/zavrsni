@@ -310,3 +310,15 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+#source devel/setup.bash
+#roslaunch ur_robot_driver ur5_bringup.launch robot_ip:=192.168.10.14 kinematics_config:="/home/RVLuser/ferit_ur5_ws/ur5_calibration.yaml"
+#roslaunch ur5_robotiq_ft_3f_moveit_config moveit_planning_execution.launch
+#roslaunch robotiq_ft_sensor robotiq_ft_streamer.launch
+
+#roslaunch ur_robot_driver ur5_bringup.launch \
+#  robot_ip:=192.168.10.14 \
+#kinematics_config:="/home/RVLuser/ferit_ur5_ws/ur5_calibration.yaml"
+
