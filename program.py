@@ -51,20 +51,22 @@ def sample_between_none(points, step=5):
             if segment:
                 sampled = segment[::step]
                 if not np.array_equal(segment[-1], sampled[-1]):
-                    sampled.append(segment[-1])  
-                result.extend(sampled)
+                    sampled.append(segment[-1])
+                sampled.append(None)  # dodaj None na kraj segmenta
+                result.append(sampled)
                 segment = []
-            result.append(point)
         else:
             segment.append(point)
     
+    # obradi zadnji segment ako nije završen s None
     if segment:
         sampled = segment[::step]
         if not np.array_equal(segment[-1], sampled[-1]):
             sampled.append(segment[-1])
-        result.extend(sampled)
+        sampled.append(None)
+        result.append(sampled)
 
-    return np.array(result)
+    return result
 
 
 def transform_to_3d(points, scale=0.001, z_height=0, offsets=(-0.25, 0.8, 0)):
@@ -136,7 +138,8 @@ def monitor_force_and_cancel(robot: UR5Controller, threshold: float = 30.0, chec
     # Phase 2: Monitor force while ACTIVE
     while not rospy.is_shutdown() and robot.client.get_state() == 1:
         wrench = robot.get_current_wrench()
-        force = np.linalg.norm(wrench[:3])
+        # force = np.linalg.norm(wrench[:3])
+        force = np.abs(wrench[2])  # Assuming force is in the Z direction
         rospy.loginfo_throttle(1.0, "[monitor] Force: %.2f N", force)
 
         if force > threshold:
@@ -186,7 +189,7 @@ def main():
     
         if key == 'w':
             print("Započinjemo crtanje. Koristi miša za pisanje. Pritisni 'c' za kraj.")
-            canvas = np.ones((500, 500, 3), dtype=np.uint8) * 255  
+            canvas = np.ones((400, 500, 3), dtype=np.uint8) * 255  
             cv2.namedWindow("Canvas")
             cv2.setMouseCallback("Canvas", draw)
         
@@ -201,15 +204,14 @@ def main():
                 if cv2.waitKey(1) & 0xFF == ord('c'):
                     print("Crtanje završeno.")
                     break
-        
+            cv2.imwrite("canvas_geometrijski_oblici.png", temp_canvas)
             cv2.destroyAllWindows()
     
         elif key == 's':
             save_points_txt()
     
         elif key == 'l':
-            load_points_txt()  
-        
+            load_points_txt()          
 
         elif key == 'b':
             print("Brisanje tocaka.")
@@ -241,7 +243,7 @@ def main():
             
            
 
-            z_up = 0.05 
+            z_up = 0.03 
             z = 0 
 
             current_pose = controller.get_current_tool_pose()
@@ -250,37 +252,44 @@ def main():
                                      [0, -1, 0],
                                      [0, 0, -1]])
             
-            current_joints = controller.get_current_joint_values() #neznam jer mi je ovo potrebno
-            traj[0]=[current_joints] #neznam jer mi je ovo potrebno
-
             for i in range(counter):
 
                 point=points_3d_going_down[i]
 
-               # T_6_0[:3, :3] = np.array([[1, 0, 0],
-               #                         [0, -1, 0],
-               #                         [0, 0, -1]])
-
                 T_6_0[0, 3] = point[0] #x
-                T_6_0[1, 3] = point[1] #y
-                
+                T_6_0[1, 3] = point[1] #y      
+                T_6_0[2, 3] = 0.34
+                #pomak do točke        
                 joint_sol = controller.get_closest_ik_solution(T_6_0)
+                controller.send_joint_trajectory_action(np.array([controller.get_current_joint_values(), joint_sol]), max_velocity=0.5, max_acceleration=0.5)
+
+
+                #pomak do stola
+                T_6_0[2, 3] = 0.33
+                joint_sol = controller.get_closest_ik_solution(T_6_0)
+                controller.send_joint_trajectory_action(np.array([controller.get_current_joint_values(), joint_sol]), max_velocity=0.05, max_acceleration=0.05)
+                
+                #pomak do stola za force sensor
+                T_6_0[2, 3] = 0.32 #z stavljeno 0 da se krene spustati 
+                joint_sol = controller.get_closest_ik_solution(T_6_0)
+                
+
                 if joint_sol is not None:
                 
                     controller.force_violation = False  
                     controller.zero_ft_sensor()
-                    monitor_thread = threading.Thread(target=monitor_force_and_cancel, args=(controller, 7.0)) #sila 7.0 N
+                    monitor_thread = threading.Thread(target=monitor_force_and_cancel, args=(controller, 1.5)) #sila 2.5 N
                     monitor_thread.start()
-                    success = controller.send_joint_trajectory_action(np.array([controller.get_current_joint_values(), joint_sol]), max_velocity=0.5, max_acceleration=0.5)                     
+                    success = controller.send_joint_trajectory_action(np.array([controller.get_current_joint_values(), joint_sol]), max_velocity=0.01, max_acceleration=0.01)                     
                     monitor_thread.join()
-                        
+                    
                     if controller.force_violation:
                         rospy.logwarn("Prekinuto zbog prevelike sile pri spuštanju.")
                     
                 if joint_sol is None:
                     rospy.logwarn("No IK solution found for lower position.")
 
-                if not controller.force_violation:  
+                if controller.force_violation:  #nakon spustanja imat ćemo force violation pa zato smo stavili da je true
                     current_pose = controller.get_current_tool_pose()
                     T_6_0 = np.copy(current_pose)
                     z=T_6_0[2, 3] # z os nakon spuštanja
@@ -289,10 +298,13 @@ def main():
                         if p is None:
                             T_6_0[2, 3]= z + z_up 
                             joint_sol = controller.get_closest_ik_solution(T_6_0)
+                            
                             if joint_sol is not None:
                                 traj[i].append(joint_sol.tolist())
+                                controller.force_violation = False
                             else:
                                 rospy.logwarn("No IK solution found for offset pose.")
+
                         else:
                             T_6_0[0, 3] = p[0]
                             T_6_0[1, 3] = p[1]
@@ -303,7 +315,7 @@ def main():
                             else:
                                 rospy.logwarn("No IK solution found for lower position.")
 
-                    controller.send_joint_trajectory_action(np.array(traj[i]), max_velocity=0.5, max_acceleration=0.5)
+                    controller.send_joint_trajectory_action(np.array(traj[i]), max_velocity=0.8, max_acceleration=0.8)
 
             send_robot_to_start_position(controller)  #na kraju se vrati u startnu poziciju
             rospy.loginfo("UR5 simple demo finished.") 
@@ -311,14 +323,8 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-
+#za pokretanje ROS-a
 #source devel/setup.bash
 #roslaunch ur_robot_driver ur5_bringup.launch robot_ip:=192.168.10.14 kinematics_config:="/home/RVLuser/ferit_ur5_ws/ur5_calibration.yaml"
 #roslaunch ur5_robotiq_ft_3f_moveit_config moveit_planning_execution.launch
 #roslaunch robotiq_ft_sensor robotiq_ft_streamer.launch
-
-#roslaunch ur_robot_driver ur5_bringup.launch \
-#  robot_ip:=192.168.10.14 \
-#kinematics_config:="/home/RVLuser/ferit_ur5_ws/ur5_calibration.yaml"
-
